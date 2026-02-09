@@ -82,6 +82,7 @@ The application provides both internal and external APIs:
 - External API: `/api/v1/` namespace with Doorkeeper OAuth and API key authentication
 - API responses use Jbuilder templates for JSON rendering
 - Rate limiting via Rack Attack with configurable limits per API key
+- **OpenAPI Documentation**: All API endpoints MUST have corresponding OpenAPI specs in `spec/requests/api/` using rswag. See `docs/api/openapi.yaml` for the generated documentation.
 
 ### Sync & Import System
 Two primary data ingestion methods:
@@ -100,10 +101,14 @@ Two primary data ingestion methods:
   - SimpleFIN: pending via `pending: true` or `posted` blank/0 + `transacted_at`.
   - Plaid: pending via Plaid `pending: true` (stored at `extra["plaid"]["pending"]` for bank/credit transactions imported via `PlaidEntry::Processor`).
 - Storage: provider data on `Transaction#extra` (e.g., `extra["simplefin"]["pending"]`; FX uses `fx_from`, `fx_date`).
-- UI: “Pending” badge when `transaction.pending?` is true; no badge if provider omits pendings.
-- Configuration (default-off)
-  - Centralized in `config/initializers/simplefin.rb` via `Rails.configuration.x.simplefin.*`.
-  - ENV-backed keys: `SIMPLEFIN_INCLUDE_PENDING=1`, `SIMPLEFIN_DEBUG_RAW=1`.
+- UI: "Pending" badge when `transaction.pending?` is true; no badge if provider omits pendings.
+- Configuration (default-on for pending)
+  - SimpleFIN: `config/initializers/simplefin.rb` via `Rails.configuration.x.simplefin.*`.
+  - Plaid: `config/initializers/plaid_config.rb` via `Rails.configuration.x.plaid.*`.
+  - Pending transactions are fetched by default and handled via reconciliation/filtering.
+  - Set `SIMPLEFIN_INCLUDE_PENDING=0` to disable pending fetching for SimpleFIN.
+  - Set `PLAID_INCLUDE_PENDING=0` to disable pending fetching for Plaid.
+  - Set `SIMPLEFIN_DEBUG_RAW=1` to enable raw payload debug logging.
 
 Provider support notes:
 - SimpleFIN: supports pending + FX metadata (stored under `extra["simplefin"]`).
@@ -160,6 +165,7 @@ Sidekiq handles asynchronous tasks:
 - Test helpers in `test/support/` for common scenarios
 - Only test critical code paths that significantly increase confidence
 - Write tests as you go, when required
+- **API Endpoints require OpenAPI specs** in `spec/requests/api/` for documentation purposes ONLY, not test (uses RSpec + rswag)
 
 ### Performance Considerations
 - Database queries optimized with proper indexes
@@ -320,3 +326,39 @@ end
 - Use `mocha` gem
 - Prefer `OpenStruct` for mock instances
 - Only mock what's necessary
+
+## API Development Guidelines
+
+### OpenAPI Documentation (MANDATORY)
+When adding or modifying API endpoints in `app/controllers/api/v1/`, you **MUST** create or update corresponding OpenAPI request specs:
+
+1. **Location**: `spec/requests/api/v1/{resource}_spec.rb`
+2. **Framework**: RSpec with rswag for OpenAPI generation
+3. **Schemas**: Define reusable schemas in `spec/swagger_helper.rb`
+4. **Generated Docs**: `docs/api/openapi.yaml`
+
+**Example structure for a new API endpoint:**
+```ruby
+# spec/requests/api/v1/widgets_spec.rb
+require 'swagger_helper'
+
+RSpec.describe 'API V1 Widgets', type: :request do
+  path '/api/v1/widgets' do
+    get 'List widgets' do
+      tags 'Widgets'
+      security [ { apiKeyAuth: [] } ]
+      produces 'application/json'
+      
+      response '200', 'widgets listed' do
+        schema '$ref' => '#/components/schemas/WidgetCollection'
+        run_test!
+      end
+    end
+  end
+end
+```
+
+**Regenerate OpenAPI docs after changes:**
+```bash
+RAILS_ENV=test bundle exec rake rswag:specs:swaggerize
+```

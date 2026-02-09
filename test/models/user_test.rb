@@ -1,8 +1,15 @@
 require "test_helper"
 
 class UserTest < ActiveSupport::TestCase
+  include ActiveJob::TestHelper
+
   def setup
     @user = users(:family_admin)
+  end
+
+  def teardown
+    clear_enqueued_jobs
+    clear_performed_jobs
   end
 
   test "should be valid" do
@@ -275,5 +282,118 @@ class UserTest < ActiveSupport::TestCase
     @user.update!(preferences: { "collapsed_sections" => {} })
     assert_not @user.dashboard_section_collapsed?("net_worth_chart"),
       "Should return false when section key is missing from collapsed_sections"
+  end
+
+  # SSO-only user security tests
+  test "sso_only? returns true for user with OIDC identity and no password" do
+    sso_user = users(:sso_only)
+    assert_nil sso_user.password_digest
+    assert sso_user.oidc_identities.exists?
+    assert sso_user.sso_only?
+  end
+
+  test "sso_only? returns false for user with password and OIDC identity" do
+    # family_admin has both password and OIDC identity
+    assert @user.password_digest.present?
+    assert @user.oidc_identities.exists?
+    assert_not @user.sso_only?
+  end
+
+  test "sso_only? returns false for user with password but no OIDC identity" do
+    user_without_oidc = users(:empty)
+    assert user_without_oidc.password_digest.present?
+    assert_not user_without_oidc.oidc_identities.exists?
+    assert_not user_without_oidc.sso_only?
+  end
+
+  test "has_local_password? returns true when password_digest is present" do
+    assert @user.has_local_password?
+  end
+
+  test "has_local_password? returns false when password_digest is nil" do
+    sso_user = users(:sso_only)
+    assert_not sso_user.has_local_password?
+  end
+
+  test "user can be created without password when skip_password_validation is true" do
+    user = User.new(
+      email: "newssuser@example.com",
+      first_name: "New",
+      last_name: "SSO User",
+      skip_password_validation: true,
+      family: families(:empty)
+    )
+    assert user.valid?, user.errors.full_messages.to_sentence
+    assert user.save
+    assert_nil user.password_digest
+  end
+
+  test "user requires password on create when skip_password_validation is false" do
+    user = User.new(
+      email: "needspassword@example.com",
+      first_name: "Needs",
+      last_name: "Password",
+      family: families(:empty)
+    )
+    assert_not user.valid?
+    assert_includes user.errors[:password], "can't be blank"
+  end
+
+  # First user role assignment tests
+  test "role_for_new_family_creator returns super_admin when no users exist" do
+    # Delete all users to simulate fresh instance
+    User.destroy_all
+
+    assert_equal :super_admin, User.role_for_new_family_creator
+  end
+
+  test "role_for_new_family_creator returns fallback role when users exist" do
+    # Users exist from fixtures
+    assert User.exists?
+
+    assert_equal :admin, User.role_for_new_family_creator
+    assert_equal :member, User.role_for_new_family_creator(fallback_role: :member)
+    assert_equal "custom_role", User.role_for_new_family_creator(fallback_role: "custom_role")
+  end
+
+  # ActiveStorage attachment cleanup tests
+  test "purging a user removes attached profile image" do
+    user = users(:family_admin)
+    user.profile_image.attach(
+      io: StringIO.new("profile-image-data"),
+      filename: "profile.png",
+      content_type: "image/png"
+    )
+
+    attachment_id = user.profile_image.id
+    assert ActiveStorage::Attachment.exists?(attachment_id)
+
+    perform_enqueued_jobs do
+      user.purge
+    end
+
+    assert_not User.exists?(user.id)
+    assert_not ActiveStorage::Attachment.exists?(attachment_id)
+  end
+
+  test "purging the last user cascades to remove family and its export attachments" do
+    family = Family.create!(name: "Solo Family", locale: "en", date_format: "%m-%d-%Y", currency: "USD")
+    user = User.create!(family: family, email: "solo@example.com", password: "password123")
+    export = family.family_exports.create!
+    export.export_file.attach(
+      io: StringIO.new("export-data"),
+      filename: "export.zip",
+      content_type: "application/zip"
+    )
+
+    export_attachment_id = export.export_file.id
+    assert ActiveStorage::Attachment.exists?(export_attachment_id)
+
+    perform_enqueued_jobs do
+      user.purge
+    end
+
+    assert_not Family.exists?(family.id)
+    assert_not ActiveStorage::Attachment.exists?(export_attachment_id)
   end
 end

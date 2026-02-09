@@ -55,31 +55,55 @@
 - **Formatting**: Server-side for currencies, numbers, dates; Stimulus for display only
 
 ## Testing Guidelines
-- **Framework**: Minitest + fixtures (NEVER RSpec or FactoryBot)
-- **Test files**: `*_test.rb` mirroring `app/` structure
-- **Fixtures**: 2-3 per model for base cases; create edge cases inline
-- **Stubs/mocks**: Use `mocha` gem; prefer `OpenStruct` for mock instances
-- **VCR**: Use existing cassettes for HTTP requests
-- **System tests**: Use sparingly (slow); prefer unit + focused integration tests
-- **Quality**: Test critical paths only; distinguish commands (test called with params) vs queries (test output)
+- Framework: Minitest (Rails). Name files `*_test.rb` and mirror `app/` structure.
+- Run: `bin/rails test` locally and ensure green before pushing.
+- Fixtures/VCR: Use `test/fixtures` and existing VCR cassettes for HTTP. Prefer unit tests plus focused integration tests.
 
-## Security & Configuration
-- **Secrets**: Never commit; start from `.env.local.example`, use `.env.local` locally
-- **Security**: Run `bin/brakeman` before major PRs
-- **Auth**: Session-based for web; OAuth2 (Doorkeeper) + API keys for external `/api/v1/`
-- **CSRF**: Protection enabled; strong params enforced
+## Commit & Pull Request Guidelines
+- Commits: Imperative subject ≤ 72 chars (e.g., "Add account balance validation"). Include rationale in body and reference issues (`#123`).
+- PRs: Clear description, linked issues, screenshots for UI changes, and migration notes if applicable. Ensure CI passes, tests added/updated, and `rubocop`/Biome are clean.
 
-## Prohibited Actions
-- Do NOT run `rails server`, `touch tmp/restart.txt`, `rails credentials`, or auto-run migrations
+## Security & Configuration Tips
+- Never commit secrets. Start from `.env.local.example`; use `.env.local` for development only.
+- Run `bin/brakeman` before major PRs. Prefer environment variables over hard-coded values.
 
-## Pre-PR Checklist
-- Tests pass: `bin/rails test`
-- Rubocop clean: `bin/rubocop -f github -a`
-- ERB lint clean: `bundle exec erb_lint ./app/**/*.erb -a`
-- Security clean: `bin/brakeman --no-pager`
+## API Development Guidelines
 
-## Key Architecture Notes
-- **Modes**: "managed" or "self_hosted" via `Rails.application.config.app_mode`
-- **Domain**: User → Accounts → Transactions → Categories/Tags/Rules
-- **Multi-currency**: Store in base currency, use `Money` objects for conversion/formatting
-- **Providers**: Plaid for bank sync; CSV import for manual data
+### OpenAPI Documentation (MANDATORY)
+When adding or modifying API endpoints in `app/controllers/api/v1/`, you **MUST** create or update corresponding OpenAPI request specs for **DOCUMENTATION ONLY**:
+
+1. **Location**: `spec/requests/api/v1/{resource}_spec.rb`
+2. **Framework**: RSpec with rswag for OpenAPI generation
+3. **Schemas**: Define reusable schemas in `spec/swagger_helper.rb`
+4. **Generated Docs**: `docs/api/openapi.yaml`
+5. **Regenerate**: Run `RAILS_ENV=test bundle exec rake rswag:specs:swaggerize` after changes
+
+## Providers: Pending Transactions and FX Metadata (SimpleFIN/Plaid/Lunchflow)
+
+- Pending detection
+  - SimpleFIN: pending when provider sends `pending: true`, or when `posted` is blank/0 and `transacted_at` is present.
+  - Plaid: pending when Plaid sends `pending: true` (stored at `transaction.extra["plaid"]["pending"]` for bank/credit transactions imported via `PlaidEntry::Processor`).
+  - Lunchflow: pending when API returns `isPending: true` in transaction response (stored at `transaction.extra["lunchflow"]["pending"]`).
+- Storage (extras)
+  - Provider metadata lives on `Transaction#extra`, namespaced (e.g., `extra["simplefin"]["pending"]`).
+  - SimpleFIN FX: `extra["simplefin"]["fx_from"]`, `extra["simplefin"]["fx_date"]`.
+- UI
+  - Shows a small “Pending” badge when `transaction.pending?` is true.
+- Variability
+  - Some providers don’t expose pendings; in that case nothing is shown.
+- Configuration (default-off)
+  - SimpleFIN runtime toggles live in `config/initializers/simplefin.rb` via `Rails.configuration.x.simplefin.*`.
+  - Lunchflow runtime toggles live in `config/initializers/lunchflow.rb` via `Rails.configuration.x.lunchflow.*`.
+  - ENV-backed keys:
+    - `SIMPLEFIN_INCLUDE_PENDING=1` (forces `pending=1` on SimpleFIN fetches when caller didn’t specify a `pending:` arg)
+    - `SIMPLEFIN_DEBUG_RAW=1` (logs raw payload returned by SimpleFIN)
+    - `LUNCHFLOW_INCLUDE_PENDING=1` (forces `include_pending=true` on Lunchflow API requests)
+    - `LUNCHFLOW_DEBUG_RAW=1` (logs raw payload returned by Lunchflow)
+
+### Provider support notes
+
+- SimpleFIN: supports pending + FX metadata; stored under `extra["simplefin"]`.
+- Plaid: supports pending when the upstream Plaid payload includes `pending: true`; stored under `extra["plaid"]`.
+- Plaid investments: investment transactions currently do not store pending metadata.
+- Lunchflow: supports pending via `include_pending` query parameter; stored under `extra["lunchflow"]`.
+- Manual/CSV imports: no pending concept.
