@@ -71,8 +71,8 @@ services:
     container_name: sure-web
     volumes:
       - app-storage:/rails/storage
-    ports:
-      - 3010:3000
+    # ports:
+    #   - 3010:3000  # Commented out - Dokploy's Traefik handles routing
     restart: unless-stopped
     environment:
       <<: *rails_env
