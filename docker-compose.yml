@@ -47,8 +47,8 @@ x-rails-env: &rails_env
   RAILS_FORCE_SSL: "false"
   RAILS_ASSUME_SSL: "false"
   DB_HOST: db
-  DB_PORT: 5432
-  REDIS_URL: redis://redis:6379/1
+  DB_PORT: 5433
+  REDIS_URL: redis://redis:6380/1
   # NOTE: enabling OpenAI will incur costs when you use AI-related features in the app (chat, rules)
   # Make sure you have set appropriate spend limits on your account before adding this.
   OPENAI_ACCESS_TOKEN: ${OPENAI_ACCESS_TOKEN}
@@ -131,6 +131,8 @@ services:
     restart: unless-stopped
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
     environment:
       <<: *db_env
       # PostgreSQL performance tuning
@@ -154,6 +156,8 @@ services:
     restart: unless-stopped
     volumes:
       - redis-data:/data
+    ports:
+      - "6380:6379"
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
