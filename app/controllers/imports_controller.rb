@@ -38,10 +38,21 @@ class ImportsController < ApplicationController
 
   def new
     @pending_import = Current.family.imports.ordered.pending.first
+    @document_upload_extensions = document_upload_supported_extensions
   end
 
   def create
     file = import_params[:import_file]
+
+    if file.present? && document_upload_request?
+      create_document_import(file)
+      return
+    end
+
+    if file.present? && sure_import_request?
+      create_sure_import(file)
+      return
+    end
 
     # Handle PDF file uploads - process with AI
     if file.present? && Import::ALLOWED_PDF_MIME_TYPES.include?(file.content_type)
@@ -79,6 +90,7 @@ class ImportsController < ApplicationController
       # Stream reading is not fully applicable here as we store the raw string in the DB,
       # but we have validated size beforehand to prevent memory exhaustion from massive files.
       import.update!(raw_file_str: file.read)
+
       redirect_to import_configuration_path(import), notice: t("imports.create.csv_uploaded")
     else
       redirect_to import_upload_path(import)
@@ -86,7 +98,10 @@ class ImportsController < ApplicationController
   end
 
   def show
-    return unless @import.requires_csv_workflow?
+    unless @import.requires_csv_workflow?
+      redirect_to import_upload_path(@import), alert: t("imports.show.finalize_upload") unless @import.uploaded?
+      return
+    end
 
     if !@import.uploaded?
       redirect_to import_upload_path(@import), alert: t("imports.show.finalize_upload")
@@ -135,6 +150,94 @@ class ImportsController < ApplicationController
       pdf_import.process_with_ai_later
 
       redirect_to import_path(pdf_import), notice: t("imports.create.pdf_processing")
+    end
+
+    def create_document_import(file)
+      adapter = VectorStore.adapter
+      unless adapter
+        redirect_to new_import_path, alert: t("imports.create.document_provider_not_configured")
+        return
+      end
+
+      if file.size > Import::MAX_PDF_SIZE
+        redirect_to new_import_path, alert: t("imports.create.document_too_large", max_size: Import::MAX_PDF_SIZE / 1.megabyte)
+        return
+      end
+
+      filename = file.original_filename.to_s
+      ext = File.extname(filename).downcase
+      supported_extensions = adapter.supported_extensions.map(&:downcase)
+
+      unless supported_extensions.include?(ext)
+        redirect_to new_import_path, alert: t("imports.create.invalid_document_file_type")
+        return
+      end
+
+      if ext == ".pdf"
+        unless valid_pdf_file?(file)
+          redirect_to new_import_path, alert: t("imports.create.invalid_pdf")
+          return
+        end
+
+        create_pdf_import(file)
+        return
+      end
+
+      family_document = Current.family.upload_document(
+        file_content: file.read,
+        filename: filename
+      )
+
+      if family_document
+        redirect_to new_import_path, notice: t("imports.create.document_uploaded")
+      else
+        redirect_to new_import_path, alert: t("imports.create.document_upload_failed")
+      end
+    end
+
+    def document_upload_supported_extensions
+      adapter = VectorStore.adapter
+      return [] unless adapter
+
+      adapter.supported_extensions.map(&:downcase).uniq.sort
+    end
+
+    def document_upload_request?
+      params.dig(:import, :type) == "DocumentImport"
+    end
+
+    def sure_import_request?
+      params.dig(:import, :type) == "SureImport"
+    end
+
+    def create_sure_import(file)
+      if file.size > SureImport::MAX_NDJSON_SIZE
+        redirect_to new_import_path, alert: t("imports.create.file_too_large", max_size: SureImport::MAX_NDJSON_SIZE / 1.megabyte)
+        return
+      end
+
+      ext = File.extname(file.original_filename.to_s).downcase
+      unless ext.in?(%w[.ndjson .json])
+        redirect_to new_import_path, alert: t("imports.create.invalid_ndjson_file_type")
+        return
+      end
+
+      content = file.read
+      file.rewind
+      unless SureImport.valid_ndjson_first_line?(content)
+        redirect_to new_import_path, alert: t("imports.create.invalid_ndjson_file_type")
+        return
+      end
+
+      import = Current.family.imports.create!(type: "SureImport")
+      import.ndjson_file.attach(
+        io: StringIO.new(content),
+        filename: file.original_filename,
+        content_type: file.content_type
+      )
+      import.sync_ndjson_rows_count!
+
+      redirect_to import_path(import), notice: t("imports.create.ndjson_uploaded")
     end
 
     def valid_pdf_file?(file)
